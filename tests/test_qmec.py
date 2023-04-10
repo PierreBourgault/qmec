@@ -4,7 +4,7 @@ from datetime import datetime, date, timedelta
 import math
 from collections import namedtuple
 
-import pandas
+import pandas as pd
 import numpy as np
 import scipy
 
@@ -13,7 +13,10 @@ from qmec import datasets
 
 upstream_data_file = datasets.get_upstream_station_data_file_path()
 downstream_data_file = datasets.get_upstream_station_data_file_path()
-output_data_file = datasets.get_expected_results_file_path()
+expected_results_data_file = datasets.get_expected_results_file_path()
+
+output_data_file = 'qmec_output_1962_2019.txt'
+diff_data_file = 'differences.csv'
 
 def timestamp_to_timestr(timestamp: float) -> str:
     ordinal_day = int(timestamp)
@@ -80,9 +83,10 @@ def validate_mtime(mtime1, mtime2):
         raise ValueError('Dates of the two files does not match')
 
 def write_to_file(timestamps, discharges):
+    warning = ''
     seconds_not_zero_found = False
     prev_year = 0
-    with open(output_data_file,'w') as f:
+    with open(output_data_file, 'w') as f:
         for i, timestamp in enumerate(timestamps):
             timestr = timestamp_to_timestr(timestamp)
             day_hour = timestr.split()
@@ -102,7 +106,8 @@ def write_to_file(timestamps, discharges):
             if is_oclock:
                 if hms[2] != '00' and not seconds_not_zero_found:
                     seconds_not_zero_found = True
-                    print(f'!!!!! WARNING: seconds <> 00 found starting @ {day} {hour}')
+                    warning = f'!!!!! WARNING: seconds <> 00 found starting @ {day} {hour}'
+                    print(warning)
                 if hms[2] == '00' and seconds_not_zero_found:
                     seconds_not_zero_found = False
                     print(f'!!!!! INFO: seconds are back to 00 starting @ {day} {hour}')
@@ -112,31 +117,67 @@ def write_to_file(timestamps, discharges):
                 line = f'{day} {hour} {height}'
                 f.write(f'{line}\n')
 
-print('=== Reading data')
+    return warning
 
-mtime_h, h1, h2 = read_input_data_from_txt(upstream_data_file, downstream_data_file)
+def test_remove_output_file():
+    try:
+        os.remove(output_data_file)
+    except FileNotFoundError:
+        pass
 
-print('=== Computing Qmec')
-config = {
-    "calibration" : {
-        "width" : 2058.177566512632,
-        "depth" : 19.171325602220669,
-        "mean_water_level_difference" : -1.089714209842837,
-        "manning_coefficient" : 0.040108343082172
-    },
-    "nbStations" : 2,
-    # Distance between stations in meters
-    # For 2 stations, a single entry
-    # For 3 stations, two entries, respectively dx between station 1 and 2, then 2 and 3
-    "dx" : [
-        72000
-    ]
-}
+    try:
+        os.remove(diff_data_file)
+    except FileNotFoundError:
+        pass
+    
+    removed = not os.path.exists(output_data_file) and not os.path.exists(diff_data_file)
+    assert removed, f'Output an diff files should have been deleted'
 
-dt = 60
-calibration = namedtuple('Calibration', config['calibration'].keys())(**config['calibration'])
+def test_qmec():
+    print('=== Reading data')
 
-w = mtime_Q, Q, h1i, h2i = qm.Qmec(calibration, mtime_h, h1, h2, config['dx'][0], dt)
+    mtime_h, h1, h2 = read_input_data_from_txt(upstream_data_file, downstream_data_file)
 
-print(f'=== Writing results to {output_data_file}')
-write_to_file(mtime_Q, Q)
+    print('=== Computing Qmec')
+    config = {
+        "calibration" : {
+            "width" : 2058.177566512632,
+            "depth" : 19.171325602220669,
+            "mean_water_level_difference" : -1.089714209842837,
+            "manning_coefficient" : 0.040108343082172
+        },
+        "nbStations" : 2,
+        # Distance between stations in meters
+        # For 2 stations, a single entry
+        # For 3 stations, two entries, respectively dx between station 1 and 2, then 2 and 3
+        "dx" : [
+            72000
+        ]
+    }
+
+    dt = 60
+    calibration = namedtuple('Calibration', config['calibration'].keys())(**config['calibration'])
+
+    w = mtime_Q, Q, h1i, h2i = qm.Qmec(calibration, mtime_h, h1, h2, config['dx'][0], dt)
+
+    print(f'=== Writing results to {output_data_file}')
+    warning = write_to_file(mtime_Q, Q)
+    assert not warning, warning
+
+def test_diff_results():
+    # Load data into dataframes
+    df_expected = pd.read_csv(expected_results_data_file, sep = ' ', names=['Day_exp', 'Hour_exp', 'Q_exp'], dtype={'Day_exp': str, 'Hour_exp': str, 'Q_exp': float})
+    df_output = pd.read_csv(output_data_file, sep = ' ', names=['Day_out', 'Hour_out', 'Q_out'], dtype={'Day_out': str, 'Hour_out': str, 'Q_out': float})
+
+    # Combine dataframes
+    df = pd.concat([df_expected, df_output], axis=1)
+
+    # Compute difference between expected results and output
+    df['delta'] = df.apply(lambda row: np.absolute(row['Q_out'] - row['Q_exp']), axis=1)
+
+    print(f"Maximum delta : {df['delta'].max()} in row {df['delta'].idxmax()}")
+    print(f"Mean delta : {df['delta'].mean()}")
+
+    df.to_csv(diff_data_file, index=False)
+
+    assert True, 'Well, not supposed'
