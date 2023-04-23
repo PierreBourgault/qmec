@@ -119,7 +119,7 @@ def write_to_file(timestamps, discharges):
 
     return warning
 
-def test_remove_output_file():
+def test_remove_output_files():
     try:
         os.remove(output_data_file)
     except FileNotFoundError:
